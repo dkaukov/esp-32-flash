@@ -226,20 +226,21 @@ public class ESPLoader {
      * This will do a SLIP encode
      */
     private byte[] slipEncode(byte[] buffer) {
-        byte[] encoded = new byte[]{(byte) (0xC0)};
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        encoded.write(0xC0); // Start of SLIP frame
         for (byte b : buffer) {
-            if (b == (byte) (0xC0)) {
-                encoded = _appendArray(encoded, new byte[]{(byte) (0xDB)});
-                encoded = _appendArray(encoded, new byte[]{(byte) (0xDC)});
-            } else if (b == (byte) (0xDB)) {
-                encoded = _appendArray(encoded, new byte[]{(byte) (0xDB)});
-                encoded = _appendArray(encoded, new byte[]{(byte) (0xDD)});
+            if (b == (byte) 0xC0) {
+                encoded.write(0xDB);
+                encoded.write(0xDC);
+            } else if (b == (byte) 0xDB) {
+                encoded.write(0xDB);
+                encoded.write(0xDD);
             } else {
-                encoded = _appendArray(encoded, new byte[]{b});
+                encoded.write(b);
             }
         }
-        encoded = _appendArray(encoded, new byte[]{(byte) (0xC0)});
-        return encoded;
+        encoded.write(0xC0); // End of SLIP frame
+        return encoded.toByteArray();
     }
 
     private byte[] slipDecode(byte[] buffer) {
@@ -405,7 +406,7 @@ public class ESPLoader {
             }
             seq += 1;
             position += FLASH_WRITE_SIZE;
-            System.out.println("Ret code:" + retVal.retCode);
+            //System.out.println("Ret code:" + retVal.retCode);
             //System.out.println("Ret code:" + retVal.retValue.toString());
             if (debug) {
                 System.out.println(printHex(retVal.retValue));

@@ -114,7 +114,7 @@ public class Esp32FlashUtil {
             }
             System.out.println(chip);
 
-            // now that we have initialised the chip we can change the baud rate to 921600
+            // now that we have initialised the chip we can change the baud rate to 460800
             // first we tell the chip the new baud rate
             // not that we do not do it for ESP8266
             if (chip != ESP8266) {
@@ -123,13 +123,9 @@ public class Esp32FlashUtil {
                 // second we change the com port baud rate
                 comPort.setBaudRate(460800);
                 // let's wait
-                delayMs(50);
+                //delayMs(50);
             }
-            // flush anything on the port
-            comPort.flushIOBuffers();
-
             espLoader.init();
-
             // Those are the files you want to flush
             // I am providing tests with the blink program
             // They might not work for you depending of your LED wiring
@@ -137,13 +133,13 @@ public class Esp32FlashUtil {
             // the test firmwares are in the resources directories
             if (chip == ESP32) {
                 byte[] file1 = readResource("ESP32/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.flashData(file1, 0xe000, 0);
                 byte[] file2 = readResource("ESP32/ESP32Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x1000, 0);
+                espLoader.flashData(file2, 0x1000, 0);
                 byte[] file3 = readResource("ESP32/ESP32Blink.ino.bin");
                 espLoader.flashCompressedData(file3, 0x10000, 0);
                 byte[] file4 = readResource("ESP32/ESP32Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.flashData(file4, 0x8000, 0);
             }
             if (chip == ESP32C2) {
                 // waiting for the Arduino core to be ready to test it
