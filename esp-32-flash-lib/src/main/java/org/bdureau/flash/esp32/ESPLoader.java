@@ -18,6 +18,9 @@ package org.bdureau.flash.esp32;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.zip.Deflater;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
@@ -107,7 +110,7 @@ public class ESPLoader {
         this.comPort = comPort;
     }
 
-    private static class cmdRet {
+    private static class CmdRet {
         int retCode;
         byte[] retValue = new byte[2048];
     }
@@ -143,7 +146,8 @@ public class ESPLoader {
             cmdData[x] = (byte) (0x55);
         }
         for (x = 0; x < 7; x++) {
-            cmdRet ret = sendCommand(ESP_SYNC, cmdData, 0, 100);
+            comPort.flush();
+            CmdRet ret = sendCommand(ESP_SYNC, cmdData, 0, 100);
             if (ret.retCode == 1) {
                 response = 1;
                 break;
@@ -157,11 +161,11 @@ public class ESPLoader {
     /*
      * This will send a command to the chip
      */
-    private cmdRet sendCommand(byte op, byte[] buffer, int chk, int timeout) {
-        comPort.flush();
-        cmdRet retVal = new cmdRet();
-        int i;
-        byte data[] = new byte[8 + buffer.length];
+    /*
+     * This will send a command to the chip
+     */
+    private CmdRet sendCommand(byte op, byte[] buffer, int chk, int timeout) {
+        byte[] data = new byte[8 + buffer.length];
         data[0] = 0x00;
         data[1] = op;
         data[2] = (byte) ((buffer.length) & 0xFF);
@@ -170,32 +174,52 @@ public class ESPLoader {
         data[5] = (byte) ((chk >> 8) & 0xFF);
         data[6] = (byte) ((chk >> 16) & 0xFF);
         data[7] = (byte) ((chk >> 24) & 0xFF);
-        for (i = 0; i < buffer.length; i++) {
+        for (int i = 0; i < buffer.length; i++) {
             data[8 + i] = buffer[i];
         }
-        retVal.retCode = -1;
         byte[] buf = slipEncode(data);
         comPort.write(buf, buf.length);
         if (debug) {
             System.out.println(printHex(buffer));
         }
-        delayMS(timeout);
-        for (int j = 0; j < 100; j++) {
-            int numRead = comPort.read(retVal.retValue, retVal.retValue.length);
-            if (numRead == 0) {
-                retVal.retCode = -1;
-            } else if (numRead == -1) {
-                retVal.retCode = -1;
+        return readSlipResponse(timeout);
+    }
+
+    private CmdRet readSlipResponse(int timeoutMs) {
+        CmdRet result = new CmdRet();
+        result.retCode = -1;
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        ByteBuffer buffer = ByteBuffer.allocate(2048);
+        boolean inFrame = false;
+        while (System.currentTimeMillis() < deadline) {
+            byte[] readBuf = new byte[1];
+            int numRead = comPort.read(readBuf, 1);
+            if (numRead <= 0) {
+                continue;
             }
-            if (retVal.retValue[0] != (byte) 0xC0) {
-                retVal.retCode = -1;
-            }
-            if (retVal.retValue[0] == (byte) 0xC0) {
-                retVal.retCode = 1;
-                return retVal;
+            byte b = readBuf[0];
+            if (b == (byte) 0xC0) {
+                if (inFrame) {
+                    // End of SLIP frame
+                    int length = buffer.position();
+                    byte[] frame = new byte[length];
+                    buffer.flip();
+                    buffer.get(frame);
+                    result.retValue = frame;
+                    result.retCode = 1;
+                    return result;
+                } else {
+                    buffer.clear();
+                    buffer.put(b);
+                    inFrame = true;
+                }
+            } else if (inFrame) {
+                if (buffer.hasRemaining()) {
+                    buffer.put(b);
+                }
             }
         }
-        return retVal;
+        return result;
     }
 
     private static void delayMS(int timeout) {
@@ -242,19 +266,19 @@ public class ESPLoader {
      */
     public void enterBootLoader() {
         // reset bootloader
+        comPort.setControlLines(true, false);
+        delayMS(100);
         comPort.setControlLines(false, true);
         delayMS(100);
         comPort.setControlLines(true, false);
-        delayMS(500);
-        comPort.setControlLines(false, false);
     }
 
     /*
      * @name flash_defl_block Send one compressed block of data to program into SPI
      * Flash memory
      */
-    private cmdRet flash_defl_block(byte data[], int seq, int timeout) {
-        cmdRet retVal;
+    private CmdRet flash_defl_block(byte[] data, int seq, int timeout) {
+        CmdRet retVal;
         byte[] pkt = _appendArray(_int_to_bytearray(data.length), _int_to_bytearray(seq));
         pkt = _appendArray(pkt, _int_to_bytearray(0));
         pkt = _appendArray(pkt, _int_to_bytearray(0)); // not sure
@@ -263,8 +287,8 @@ public class ESPLoader {
         return retVal;
     }
 
-    private cmdRet flash_block(byte data[], int seq, int timeout) {
-        cmdRet retVal;
+    private CmdRet flash_block(byte[] data, int seq, int timeout) {
+        CmdRet retVal;
         byte[] pkt = _appendArray(_int_to_bytearray(data.length), _int_to_bytearray(seq));
         pkt = _appendArray(pkt, _int_to_bytearray(0));
         pkt = _appendArray(pkt, _int_to_bytearray(0)); // not sure
@@ -317,18 +341,18 @@ public class ESPLoader {
             }
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
             int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
-            cmdRet retVal;
+            CmdRet retVal;
             // not using the block timeout yet need to modify the senCommand to have a
             // proper timeout
-            retVal = flash_defl_block(block, seq, /* block_timeout */ 100);
+            retVal = flash_defl_block(block, seq, block_timeout);
             if (retVal.retCode == -1) {
                 System.out.println("Retry because Ret code:" + retVal.retCode);
                 System.out.println(printHex(retVal.retValue));
-                retVal = flash_defl_block(block, seq, /* block_timeout */ 100);
+                retVal = flash_defl_block(block, seq, block_timeout);
             }
             seq += 1;
             position += FLASH_WRITE_SIZE;
-            System.out.println("Ret code:" + retVal.retCode);
+            //System.out.println("Ret code:" + retVal.retCode);
             //System.out.println("Ret code:" + retVal.retValue.toString());
             if (debug) {
                 System.out.println(printHex(retVal.retValue));
@@ -357,14 +381,14 @@ public class ESPLoader {
             }
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
             int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
-            cmdRet retVal;
+            CmdRet retVal;
             // not using the block timeout yet need to modify the senCommand to have a
             // proper timeout
-            retVal = flash_block(block, seq, /* block_timeout */ 100);
+            retVal = flash_block(block, seq, block_timeout);
             if (retVal.retCode == -1) {
                 System.out.println("Retry because Ret code:" + retVal.retCode);
                 System.out.println(printHex(retVal.retValue));
-                retVal = flash_block(block, seq, /* block_timeout */ 100);
+                retVal = flash_block(block, seq, block_timeout);
             }
             seq += 1;
             position += FLASH_WRITE_SIZE;
@@ -402,7 +426,7 @@ public class ESPLoader {
         if (chip == ESP32S3 || chip == ESP32C2 || chip == ESP32C3 || chip == ESP32C6 || chip == ESP32S2 || chip == ESP32H2) {
             pkt = _appendArray(pkt, _int_to_bytearray(0));
         }
-        sendCommand(ESP_FLASH_DEFL_BEGIN, pkt, 0, timeout);
+        CmdRet res = sendCommand(ESP_FLASH_DEFL_BEGIN, pkt, 0, timeout);
         // end time
         long t2 = System.currentTimeMillis();
         if (size != 0 && !isStub) {
@@ -424,7 +448,7 @@ public class ESPLoader {
         } else {
             // no stub
             write_size = erase_blocks * FLASH_WRITE_SIZE;
-            timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size);
+            timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size) * 10;
         }
         //System.out.println("Compressed " + size + " bytes to " + compsize + "...");
         byte[] pkt = _appendArray(_int_to_bytearray(write_size), _int_to_bytearray(num_blocks));
@@ -434,7 +458,7 @@ public class ESPLoader {
         if (chip == ESP32S3 || chip == ESP32C2 || chip == ESP32C3 || chip == ESP32C6 || chip == ESP32S2 || chip == ESP32H2) {
             pkt = _appendArray(pkt, _int_to_bytearray(0));
         }
-        sendCommand(ESP_FLASH_BEGIN, pkt, 0, timeout);
+        CmdRet res = sendCommand(ESP_FLASH_BEGIN, pkt, 0, timeout);
         // end time
         long t2 = System.currentTimeMillis();
         if (size != 0 && !isStub) {
@@ -528,7 +552,7 @@ public class ESPLoader {
     }
 
     private int read_reg(int addr, int timeout) {
-        cmdRet val;
+        CmdRet val;
         byte[] pkt = _int_to_bytearray(addr);
         val = sendCommand(ESP_READ_REG, pkt, 0, timeout);
         return val.retValue[0];
@@ -536,18 +560,15 @@ public class ESPLoader {
 
     private int readRegister(int reg) {
         int retVal;
-        cmdRet ret;
+        CmdRet ret;
         byte[] packet = _int_to_bytearray(reg);
         ret = sendCommand(ESP_READ_REG, packet, 0, 100);
         byte[] subArray = new byte[4];
-        subArray[0] = ret.retValue[5];
-        subArray[1] = ret.retValue[6];
-        subArray[2] = ret.retValue[7];
-        subArray[3] = ret.retValue[8];
-        retVal = ((subArray[0] & 0xFF) << 24) |
-            ((subArray[1] & 0xFF) << 16) |
-            ((subArray[2] & 0xFF) << 8) |
-            (subArray[3] & 0xFF);
+        subArray[3] = ret.retValue[5];
+        subArray[2] = ret.retValue[6];
+        subArray[1] = ret.retValue[7];
+        subArray[0] = ret.retValue[8];
+        retVal = ((subArray[0] & 0xFF) << 24) | ((subArray[1] & 0xFF) << 16) | ((subArray[2] & 0xFF) << 8) | (subArray[3] & 0xFF);
         return retVal;
     }
 

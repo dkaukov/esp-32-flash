@@ -21,7 +21,7 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 public class Esp32FlashUtil {
 
     static SerialPort comPort;
-    private static final boolean DEBUG = true;
+    private static final boolean DEBUG = false;
     private static final int ESP_ROM_BAUD = 115200;
 
     public static byte[] readResource(String resourcePath) {
@@ -54,7 +54,7 @@ public class Esp32FlashUtil {
     public static void main(String[] args) {
         boolean syncSuccess = false;
         // get the first port available, you might want to change that
-        comPort = SerialPort.getCommPorts()[0];
+        comPort = SerialPort.getCommPorts()[6];
         String portName = comPort.getDescriptivePortName();
         if (DEBUG) {
             System.out.println("connected to: " + portName);
@@ -81,6 +81,7 @@ public class Esp32FlashUtil {
                 syncSuccess = true;
                 System.out.println("Sync Success!!!");
                 delayMs(1000);
+                comPort.flushIOBuffers();
                 break;
             }
         }
@@ -117,10 +118,10 @@ public class Esp32FlashUtil {
             // first we tell the chip the new baud rate
             // not that we do not do it for ESP8266
             if (chip != ESP8266) {
-                System.out.println("Changing baudrate to 921600");
-                espLoader.changeBaudRate(921600);
+                System.out.println("Changing baudrate to 460800");
+                espLoader.changeBaudRate(460800);
                 // second we change the com port baud rate
-                comPort.setBaudRate(921600);
+                comPort.setBaudRate(460800);
                 // let's wait
                 delayMs(50);
             }
@@ -249,14 +250,17 @@ public class Esp32FlashUtil {
             public void setControlLines(boolean dtr, boolean rts) {
                 if (dtr) {
                     comPort.setDTR();
-                } else {
-                    comPort.clearDTR();
                 }
                 if (rts) {
                     comPort.setRTS();
-                } else {
+                }
+                if (!dtr) {
+                    comPort.clearDTR();
+                }
+                if (!rts) {
                     comPort.clearRTS();
                 }
+
             }
         });
         res.setDebug(DEBUG);
