@@ -158,12 +158,6 @@ public class ESPLoader {
         return response;
     }
 
-    /*
-     * This will send a command to the chip
-     */
-    /*
-     * This will send a command to the chip
-     */
     private CmdRet sendCommand(byte op, byte[] buffer, int chk, int timeout) {
         byte[] data = new byte[8 + buffer.length];
         data[0] = 0x00;
@@ -174,9 +168,7 @@ public class ESPLoader {
         data[5] = (byte) ((chk >> 8) & 0xFF);
         data[6] = (byte) ((chk >> 16) & 0xFF);
         data[7] = (byte) ((chk >> 24) & 0xFF);
-        for (int i = 0; i < buffer.length; i++) {
-            data[8 + i] = buffer[i];
-        }
+        System.arraycopy(buffer, 0, data, 8, buffer.length);
         byte[] buf = slipEncode(data);
         comPort.write(buf, buf.length);
         if (debug) {
@@ -205,12 +197,11 @@ public class ESPLoader {
                     byte[] frame = new byte[length];
                     buffer.flip();
                     buffer.get(frame);
-                    result.retValue = frame;
+                    result.retValue = slipDecode(frame);
                     result.retCode = 1;
                     return result;
                 } else {
                     buffer.clear();
-                    buffer.put(b);
                     inFrame = true;
                 }
             } else if (inFrame) {
@@ -240,7 +231,6 @@ public class ESPLoader {
             if (b == (byte) (0xC0)) {
                 encoded = _appendArray(encoded, new byte[]{(byte) (0xDB)});
                 encoded = _appendArray(encoded, new byte[]{(byte) (0xDC)});
-
             } else if (b == (byte) (0xDB)) {
                 encoded = _appendArray(encoded, new byte[]{(byte) (0xDB)});
                 encoded = _appendArray(encoded, new byte[]{(byte) (0xDD)});
@@ -250,6 +240,29 @@ public class ESPLoader {
         }
         encoded = _appendArray(encoded, new byte[]{(byte) (0xC0)});
         return encoded;
+    }
+
+    private byte[] slipDecode(byte[] buffer) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        boolean inEscape = false;
+        for (byte b : buffer) {
+            if (inEscape) {
+                if (b == (byte) 0xDC) {
+                    out.write(0xC0);
+                } else if (b == (byte) 0xDD) {
+                    out.write(0xDB);
+                } else {
+                    // Invalid escape, write as-is or handle error
+                    out.write(b);
+                }
+                inEscape = false;
+            } else if (b == (byte) 0xDB) {
+                inEscape = true;
+            } else {
+                out.write(b);
+            }
+        }
+        return out.toByteArray();
     }
 
     /*
@@ -564,10 +577,10 @@ public class ESPLoader {
         byte[] packet = _int_to_bytearray(reg);
         ret = sendCommand(ESP_READ_REG, packet, 0, 100);
         byte[] subArray = new byte[4];
-        subArray[3] = ret.retValue[5];
-        subArray[2] = ret.retValue[6];
-        subArray[1] = ret.retValue[7];
-        subArray[0] = ret.retValue[8];
+        subArray[3] = ret.retValue[4];
+        subArray[2] = ret.retValue[5];
+        subArray[1] = ret.retValue[6];
+        subArray[0] = ret.retValue[7];
         retVal = ((subArray[0] & 0xFF) << 24) | ((subArray[1] & 0xFF) << 16) | ((subArray[2] & 0xFF) << 8) | (subArray[3] & 0xFF);
         return retVal;
     }
