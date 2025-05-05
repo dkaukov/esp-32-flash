@@ -270,6 +270,8 @@ public class ESPLoader {
      * This does a reset in order to run the prog after flash
      */
     public void reset() {
+        comPort.setControlLines(false, false);
+        delayMS(100);
         comPort.setControlLines(false, true);
         delayMS(100);
         comPort.setControlLines(false, false);
