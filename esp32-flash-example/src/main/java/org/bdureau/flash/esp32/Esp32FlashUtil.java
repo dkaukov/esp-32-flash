@@ -70,23 +70,14 @@ public class Esp32FlashUtil {
             System.out.println("Done with bootloader");
         }
         comPort.flushIOBuffers();
-        delayMs(1000);
+        delayMs(50);
 
-        // first do the sync
-        for (int i = 0; i < 3; i++) {
-            comPort.flushIOBuffers();
-
-            System.out.println("sync" + i);
-            if (espLoader.sync() != 0) {
-                syncSuccess = true;
-                System.out.println("Sync Success!!!");
-                delayMs(1000);
-                comPort.flushIOBuffers();
-                break;
-            }
-        }
+        syncSuccess = espLoader.sync();
 
         if (syncSuccess) {
+            System.out.println("Sync Success!!!");
+            delayMs(100);
+            comPort.flushIOBuffers();
             // let's detect the chip
             // should work with an ESP32, ESP32S3, ESP32C3, ESP8266 because this is what the program
             // is for

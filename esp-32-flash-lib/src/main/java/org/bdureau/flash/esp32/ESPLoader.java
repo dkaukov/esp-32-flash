@@ -134,28 +134,29 @@ public class ESPLoader {
     /*
      * This will initialise the chip
      */
-    public int sync() {
-        int x;
-        int response = 0;
+    public boolean sync() {
         byte[] cmdData = new byte[36];
         cmdData[0] = (byte) (0x07);
         cmdData[1] = (byte) (0x07);
         cmdData[2] = (byte) (0x12);
         cmdData[3] = (byte) (0x20);
-        for (x = 4; x < 36; x++) {
+        for (int x = 4; x < 36; x++) {
             cmdData[x] = (byte) (0x55);
         }
-        for (x = 0; x < 7; x++) {
+        for (int x = 0; x < 7; x++) {
             comPort.flush();
-            CmdRet ret = sendCommand(ESP_SYNC, cmdData, 0, 100);
+            CmdRet ret = sendCommand(ESP_SYNC, cmdData, 0, 20);
             if (ret.retCode == 1) {
-                response = 1;
-                break;
+                return true;
             } else {
-                System.out.println("sync ret:" + ret.retCode);
+                if (debug) {
+                    System.err.println("sync timeout.");
+                }
+                delayMS(50);
             }
         }
-        return response;
+        System.err.println("Sync failure after 7 attempts.");
+        return false;
     }
 
     private CmdRet sendCommand(byte op, byte[] buffer, int chk, int timeout) {
