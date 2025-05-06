@@ -112,6 +112,7 @@ public class Esp32FlashUtil {
                 // let's wait
                 //delayMs(50);
             }
+            espLoader.loadStub();
             espLoader.init();
             // Those are the files you want to flush
             // I am providing tests with the blink program

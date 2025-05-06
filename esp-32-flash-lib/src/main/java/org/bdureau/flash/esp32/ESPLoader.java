@@ -17,11 +17,18 @@ package org.bdureau.flash.esp32;
  */
 
 import java.io.ByteArrayOutputStream;
+import java.io.FileNotFoundException;
+import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.zip.Deflater;
+
+import com.eclipsesource.json.Json;
+import com.eclipsesource.json.JsonObject;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
@@ -184,6 +191,7 @@ public class ESPLoader {
         buf.put(payload);                        // Payload
         byte[] encoded = slipEncode(buf.array());
         if (debug) {
+            System.out.printf("****: op: 0x%02X, len: %d, payload: %s%n", op, payload.length,  printHex2(payload));
             System.out.println(">>>>: " + encoded.length + ": " + printHex(encoded));
         }
         comPort.write(encoded, encoded.length);
@@ -209,7 +217,7 @@ public class ESPLoader {
                     buffer.flip();
                     buffer.get(frame);
                     if (debug) {
-                        System.out.println("<<<<:" + frame.length + ": " + printHex(frame));
+                        System.out.println("<<<<: " + frame.length + ": " + printHex(frame));
                     }
                     return new CmdReply(true, slipDecode(frame));
                 } else {
@@ -481,12 +489,38 @@ public class ESPLoader {
         }
         return num_blocks;
     }
-    public boolean loadStub(byte[] stubData, int loadAddr, int entryPoint) {
-        int numBlocks = (stubData.length + FLASH_WRITE_SIZE - 1) / FLASH_WRITE_SIZE;
+
+    public boolean loadStub(byte[] text, int textAdr, byte[] data, int dataAdr, int entryPoint) {
+        // 1. Load .TEXT
+        System.out.println("Loading .text");
+        if (!loadToRam(text, textAdr, 0x1800)) {
+            System.err.println("Failed to load TEXT.");
+            return false;
+        }
+        // 1. Load .DATA
+        System.out.println("Loading .data");
+        if (!loadToRam(data, dataAdr, 0x1800)) {
+            System.err.println("Failed to load DATA.");
+            return false;
+        }
+        System.out.println("Running stub...");
+        // 3. End memory transfer
+        byte[] endPayload = _appendArray(_int_to_bytearray(0), _int_to_bytearray(entryPoint));
+        CmdReply endReply = sendCommand(ESP_MEM_END, endPayload, 0, DEFAULT_TIMEOUT);
+        if (!endReply.isSuccess()) {
+            System.err.println("Failed to complete memory transfer.");
+            return false;
+        }
+        System.out.println("Stub loaded successfully.");
+        return true;
+    }
+
+    private boolean loadToRam(byte[] data, int addr, int blockSize) {
+        int numBlocks = (data.length + blockSize - 1) / blockSize;
         // 1. Begin memory transfer
-        byte[] pkt = _appendArray(_int_to_bytearray(stubData.length), _int_to_bytearray(numBlocks));
-        pkt = _appendArray(pkt, _int_to_bytearray(FLASH_WRITE_SIZE));
-        pkt = _appendArray(pkt, _int_to_bytearray(loadAddr));
+        byte[] pkt = _appendArray(_int_to_bytearray(data.length), _int_to_bytearray(numBlocks));
+        pkt = _appendArray(pkt, _int_to_bytearray(blockSize));
+        pkt = _appendArray(pkt, _int_to_bytearray(addr));
         CmdReply beginReply = sendCommand(ESP_MEM_BEGIN, pkt, 0, DEFAULT_TIMEOUT);
         if (!beginReply.isSuccess()) {
             System.err.println("Failed to start memory transfer.");
@@ -494,29 +528,43 @@ public class ESPLoader {
         }
         // 2. Send each block
         for (int seq = 0; seq < numBlocks; seq++) {
-            int offset = seq * FLASH_WRITE_SIZE;
-            int actualBlockSize = Math.min(FLASH_WRITE_SIZE, stubData.length - offset);
-            byte[] blockData = Arrays.copyOfRange(stubData, offset, offset + actualBlockSize);
+            int offset = seq * blockSize;
+            int actualBlockSize = Math.min(blockSize, data.length - offset);
+            byte[] block = Arrays.copyOfRange(data, offset, offset + actualBlockSize);
             byte[] dataPayload = _appendArray(_int_to_bytearray(actualBlockSize), _int_to_bytearray(seq));
             dataPayload = _appendArray(dataPayload, _int_to_bytearray(0));
-            dataPayload = _appendArray(dataPayload, _int_to_bytearray(loadAddr + offset));
-            dataPayload = _appendArray(dataPayload, blockData);
-            CmdReply dataReply = sendCommand(ESP_MEM_DATA, dataPayload, 0, DEFAULT_TIMEOUT);
+            dataPayload = _appendArray(dataPayload, _int_to_bytearray(0));
+            dataPayload = _appendArray(dataPayload,  block);
+            CmdReply dataReply = sendCommand(ESP_MEM_DATA, dataPayload, _checksum(block), DEFAULT_TIMEOUT);
             if (!dataReply.isSuccess()) {
                 System.err.printf("Failed to write memory block %d/%d%n", seq + 1, numBlocks);
                 return false;
             }
         }
-        // 3. End memory transfer
-        byte[] endPayload = _appendArray(_int_to_bytearray(entryPoint), _int_to_bytearray(1));
-        CmdReply endReply = sendCommand(ESP_MEM_END, endPayload, 0, DEFAULT_TIMEOUT);
-        if (!endReply.isSuccess()) {
-            System.err.println("Failed to complete memory transfer.");
-            return false;
-        }
         return true;
     }
 
+    private static byte[] readResource(String resourcePath) {
+        try (InputStream inputStream = Thread.currentThread().getContextClassLoader().getResourceAsStream(resourcePath)) {
+            if (inputStream == null) {
+                throw new FileNotFoundException("Resource not found: " + resourcePath);
+            }
+            return inputStream.readAllBytes();
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to read resource: " + resourcePath, ex);
+        }
+    }
+
+    public boolean loadStub() {
+        JsonObject json = Json.parse(new String(readResource("stubs/1/esp32.json"))).asObject();
+        int entry = json.getInt("entry", 0);
+        int text_start = json.getInt("text_start", 0);
+        int data_start = json.getInt("data_start", 0);
+        byte[] text = Base64.getDecoder().decode(json.getString("text", ""));
+        byte[] data = Base64.getDecoder().decode(json.getString("data", ""));
+        isStub = loadStub(text, text_start, data, data_start, entry);
+        return isStub;
+    }
 
     /*
      * Send a command to the chip to find out what type it is
@@ -568,6 +616,16 @@ public class ESPLoader {
             if (i < bytes.length - 1) {
                 sb.append(",");
             }
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private String printHex2(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("[");
+        for (byte aByte : bytes) {
+            sb.append(String.format("%02X", aByte));
         }
         sb.append("]");
         return sb.toString();
