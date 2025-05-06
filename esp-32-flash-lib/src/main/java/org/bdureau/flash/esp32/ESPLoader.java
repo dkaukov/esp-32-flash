@@ -19,8 +19,7 @@ package org.bdureau.flash.esp32;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.ByteOrder;
 import java.util.zip.Deflater;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
@@ -44,64 +43,72 @@ public class ESPLoader {
     public static final int ESP32C2 = 0x32C2;
     public static final int ESP32C3 = 0x32C3;
     public static final int ESP32C6 = 0x32C6;
-    private static final int ESP32_DATAREGVALUE = 0x15122500;
-    private static final int ESP8266_DATAREGVALUE = 0x00062000;
-    private static final int ESP32S2_DATAREGVALUE = 0x500;
 
+    // Device-specific data register values
+    private static final int ESP32_DATAREGVALUE     = 0x15122500;
+    private static final int ESP8266_DATAREGVALUE   = 0x00062000;
+    private static final int ESP32S2_DATAREGVALUE   = 0x00000500;
+
+    // Flash and image constants
     private static final int BOOTLOADER_FLASH_OFFSET = 0x1000;
-    private static final int ESP_IMAGE_MAGIC = 0xe9;
+    private static final int ESP_IMAGE_MAGIC         = 0xE9;
 
-    // Commands supported by ESP8266 ROM bootloader
-    private static final byte ESP_FLASH_BEGIN = 0x02;
-    private static final byte ESP_FLASH_DATA = 0x03;
-    private static final byte ESP_FLASH_END = 0x04;
-    private static final byte ESP_MEM_BEGIN = 0x05;
-    private static final byte ESP_MEM_END = 0x06;
-    private static final int ESP_MEM_DATA = 0x07;
-    private static final byte ESP_SYNC = 0x08;
-    private static final int ESP_WRITE_REG = 0x09;
-    private static final byte ESP_READ_REG = 0x0A;
+    // ESP8266 ROM bootloader commands
+    private static final byte ESP_FLASH_BEGIN   = (byte) 0x02;
+    private static final byte ESP_FLASH_DATA    = (byte) 0x03;
+    private static final byte ESP_FLASH_END     = (byte) 0x04;
+    private static final byte ESP_MEM_BEGIN     = (byte) 0x05;
+    private static final byte ESP_MEM_END       = (byte) 0x06;
+    private static final byte ESP_MEM_DATA      = (byte) 0x07;
+    private static final byte ESP_SYNC          = (byte) 0x08;
+    private static final byte ESP_WRITE_REG     = (byte) 0x09;
+    private static final byte ESP_READ_REG      = (byte) 0x0A;
 
-    // Some commands supported by ESP32 ROM bootloader (or -8266 w/ stub)
-    private static final byte ESP_SPI_SET_PARAMS = 0x0B; // 11
-    private static final byte ESP_SPI_ATTACH = 0x0D; // 13
-    private static final byte ESP_READ_FLASH_SLOW = 0x0E; // 14 // ROM only, much slower than the stub flash read
-    private static final byte ESP_CHANGE_BAUDRATE = 0x0F; // 15
-    private static final byte ESP_FLASH_DEFL_BEGIN = 0x10; // 16
-    private static final byte ESP_FLASH_DEFL_DATA = 0x11; // 17
-    private static final byte ESP_FLASH_DEFL_END = 0x12; // 18
-    private static final byte ESP_SPI_FLASH_MD5 = 0x13; // 19
+    // ESP32 ROM or ESP8266 with stub
+    private static final byte ESP_SPI_SET_PARAMS     = (byte) 0x0B; // 11
+    private static final byte ESP_SPI_ATTACH         = (byte) 0x0D; // 13
+    private static final byte ESP_READ_FLASH_SLOW    = (byte) 0x0E; // 14 (ROM only)
+    private static final byte ESP_CHANGE_BAUDRATE    = (byte) 0x0F; // 15
+    private static final byte ESP_FLASH_DEFL_BEGIN   = (byte) 0x10; // 16
+    private static final byte ESP_FLASH_DEFL_DATA    = (byte) 0x11; // 17
+    private static final byte ESP_FLASH_DEFL_END     = (byte) 0x12; // 18
+    private static final byte ESP_SPI_FLASH_MD5      = (byte) 0x13; // 19
 
-    // Commands supported by ESP32-S2/S3/C3/C6 ROM bootloader only
-    private static final byte ESP_GET_SECURITY_INFO = 0x14;
+    // ESP32-S2/S3/C3/C6 ROM bootloader only
+    private static final byte ESP_GET_SECURITY_INFO  = (byte) 0x14;
 
-    // Some commands supported by stub only
-    private static final int ESP_ERASE_FLASH = 0xD0;
-    private static final int ESP_ERASE_REGION = 0xD1;
-    private static final int ESP_READ_FLASH = 0xD2;
-    private static final int ESP_RUN_USER_CODE = 0xD3;
+    // Stub-only commands
+    private static final byte ESP_ERASE_FLASH   = (byte) 0xD0;
+    private static final byte ESP_ERASE_REGION  = (byte) 0xD1;
+    private static final byte ESP_READ_FLASH    = (byte) 0xD2;
+    private static final byte ESP_RUN_USER_CODE = (byte) 0xD3;
 
-    // Response code(s) sent by ROM
-    private static final int ROM_INVALID_RECV_MSG = 0x05;
+    // ROM response codes
+    private static final byte ROM_INVALID_RECV_MSG   = (byte) 0x05;
 
-    // Initial state for the checksum routine
-    private static final byte ESP_CHECKSUM_MAGIC = (byte) 0xEF;
+    // Checksum initial state
+    private static final byte ESP_CHECKSUM_MAGIC     = (byte) 0xEF;
 
+    // Misc hardware addresses
     private static final int UART_DATE_REG_ADDR = 0x60000078;
 
-    private static final int USB_RAM_BLOCK = 0x800;
+    // RAM block sizes
+    private static final int USB_RAM_BLOCK = 0x0800;
     private static final int ESP_RAM_BLOCK = 0x1800;
 
-    // Timeouts
-    private static final int DEFAULT_TIMEOUT = 3000;
-    private static final int CHIP_ERASE_TIMEOUT = 120000; // timeout for full chip erase in ms
-    private static final int MAX_TIMEOUT = CHIP_ERASE_TIMEOUT * 2; // longest any command can run in ms
-    private static final int SYNC_TIMEOUT = 100; // timeout for syncing with bootloader in ms
-    private static final int ERASE_REGION_TIMEOUT_PER_MB = 30000; // timeout (per megabyte) for erasing a region in ms
-    private static final int MEM_END_ROM_TIMEOUT = 500;
-    private static final int MD5_TIMEOUT_PER_MB = 8000;
-    private static int chip;
+    // Timeouts (in milliseconds)
+    private static final int DEFAULT_TIMEOUT              = 3000;
+    private static final int SHORT_CMD_TIMEOUT            = 100;
+    private static final int SYNC_TIMEOUT                 = 100;
+    private static final int MEM_END_ROM_TIMEOUT          = 500;
 
+    private static final int CHIP_ERASE_TIMEOUT           = 120_000;  // Full chip erase
+    private static final int MAX_TIMEOUT                  = CHIP_ERASE_TIMEOUT * 2; // Longest possible command
+
+    private static final int ERASE_REGION_TIMEOUT_PER_MB  = 30_000;   // Per MB region erase
+    private static final int MD5_TIMEOUT_PER_MB           = 8000;     // Per MB MD5 computation
+
+    private int chip;
     private boolean isStub = false;
     private boolean debug = true;
 
@@ -110,9 +117,19 @@ public class ESPLoader {
         this.comPort = comPort;
     }
 
-    private static class CmdRet {
-        int retCode;
-        byte[] retValue = new byte[2048];
+    private static class CmdReply {
+        private final boolean success;
+        private final  byte[] reply;
+        public CmdReply(boolean success, byte[] reply) {
+            this.success = success;
+            this.reply = reply;
+        }
+        public boolean isSuccess() {
+            return success;
+        }
+        public byte[] getReply() {
+            return reply;
+        }
     }
 
     public boolean isStub() {
@@ -136,17 +153,14 @@ public class ESPLoader {
      */
     public boolean sync() {
         byte[] cmdData = new byte[36];
-        cmdData[0] = (byte) (0x07);
-        cmdData[1] = (byte) (0x07);
-        cmdData[2] = (byte) (0x12);
-        cmdData[3] = (byte) (0x20);
-        for (int x = 4; x < 36; x++) {
-            cmdData[x] = (byte) (0x55);
-        }
+        cmdData[0] = cmdData[1] = (byte) 0x07;
+        cmdData[2] = (byte) 0x12;
+        cmdData[3] = (byte) 0x20;
+        java.util.Arrays.fill(cmdData, 5, 36, (byte) 0x55);
         for (int x = 0; x < 7; x++) {
             comPort.flush();
-            CmdRet ret = sendCommand(ESP_SYNC, cmdData, 0, 20);
-            if (ret.retCode == 1) {
+            CmdReply ret = sendCommand(ESP_SYNC, cmdData, 0, SYNC_TIMEOUT);
+            if (ret.isSuccess()) {
                 return true;
             } else {
                 if (debug) {
@@ -159,28 +173,23 @@ public class ESPLoader {
         return false;
     }
 
-    private CmdRet sendCommand(byte op, byte[] buffer, int chk, int timeout) {
-        byte[] data = new byte[8 + buffer.length];
-        data[0] = 0x00;
-        data[1] = op;
-        data[2] = (byte) ((buffer.length) & 0xFF);
-        data[3] = (byte) ((buffer.length >> 8) & 0xFF);
-        data[4] = (byte) ((chk & 0xFF));
-        data[5] = (byte) ((chk >> 8) & 0xFF);
-        data[6] = (byte) ((chk >> 16) & 0xFF);
-        data[7] = (byte) ((chk >> 24) & 0xFF);
-        System.arraycopy(buffer, 0, data, 8, buffer.length);
-        byte[] buf = slipEncode(data);
-        comPort.write(buf, buf.length);
+    private CmdReply sendCommand(byte op, byte[] payload, int checksum, int timeout) {
+        ByteBuffer buf = ByteBuffer.allocate(8 + payload.length);
+        buf.order(ByteOrder.LITTLE_ENDIAN);      // ESP32 protocol uses little-endian
+        buf.put((byte) 0x00);                    // Direction flag
+        buf.put(op);                             // Operation
+        buf.putShort((short) payload.length);    // Length (2 bytes)
+        buf.putInt(checksum);                    // Checksum (4 bytes)
+        buf.put(payload);                        // Payload
+        byte[] encoded = slipEncode(buf.array());
         if (debug) {
-            System.out.println(">>>>:" + buf.length + ": " + printHex(buf));
+            System.out.println(">>>>: " + encoded.length + ": " + printHex(encoded));
         }
+        comPort.write(encoded, encoded.length);
         return readSlipResponse(timeout);
     }
 
-    private CmdRet readSlipResponse(int timeoutMs) {
-        CmdRet result = new CmdRet();
-        result.retCode = -1;
+    private CmdReply readSlipResponse(int timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         ByteBuffer buffer = ByteBuffer.allocate(2048);
         boolean inFrame = false;
@@ -198,12 +207,10 @@ public class ESPLoader {
                     byte[] frame = new byte[length];
                     buffer.flip();
                     buffer.get(frame);
-                    result.retValue = slipDecode(frame);
-                    result.retCode = 1;
                     if (debug) {
-                        System.out.println("<<<<:" + result.retValue.length + ": " + printHex(result.retValue));
+                        System.out.println("<<<<:" + frame.length + ": " + printHex(frame));
                     }
-                    return result;
+                    return new CmdReply(true, slipDecode(frame));
                 } else {
                     buffer.clear();
                     inFrame = true;
@@ -214,7 +221,7 @@ public class ESPLoader {
                 }
             }
         }
-        return result;
+        return new CmdReply(false, new byte[0]);
     }
 
     private static void delayMS(int timeout) {
@@ -297,8 +304,8 @@ public class ESPLoader {
      * @name flash_defl_block Send one compressed block of data to program into SPI
      * Flash memory
      */
-    private CmdRet flash_defl_block(byte[] data, int seq, int timeout) {
-        CmdRet retVal;
+    private CmdReply flash_defl_block(byte[] data, int seq, int timeout) {
+        CmdReply retVal;
         byte[] pkt = _appendArray(_int_to_bytearray(data.length), _int_to_bytearray(seq));
         pkt = _appendArray(pkt, _int_to_bytearray(0));
         pkt = _appendArray(pkt, _int_to_bytearray(0)); // not sure
@@ -307,8 +314,8 @@ public class ESPLoader {
         return retVal;
     }
 
-    private CmdRet flash_block(byte[] data, int seq, int timeout) {
-        CmdRet retVal;
+    private CmdReply flash_block(byte[] data, int seq, int timeout) {
+        CmdReply retVal;
         byte[] pkt = _appendArray(_int_to_bytearray(data.length), _int_to_bytearray(seq));
         pkt = _appendArray(pkt, _int_to_bytearray(0));
         pkt = _appendArray(pkt, _int_to_bytearray(0)); // not sure
@@ -324,7 +331,7 @@ public class ESPLoader {
             // byte pkt[] = _int_to_bytearray(0); // 4 or 8 zero's? not sure
             byte[] pkt = _appendArray(_int_to_bytearray(0), _int_to_bytearray(0));
             System.out.println("Enabling default SPI flash mode...");
-            sendCommand(ESP_SPI_ATTACH, pkt, 0, 100);
+            sendCommand(ESP_SPI_ATTACH, pkt, 0, SHORT_CMD_TIMEOUT);
         }
         // We are hardcoding 4MB flash for an ESP32
         System.out.println("Configuring flash size...");
@@ -333,7 +340,7 @@ public class ESPLoader {
         pkt2 = _appendArray(pkt2, _int_to_bytearray(/* 4096 */ 4 * 1024));
         pkt2 = _appendArray(pkt2, _int_to_bytearray(256));
         pkt2 = _appendArray(pkt2, _int_to_bytearray(0xFFFF));
-        sendCommand(ESP_SPI_SET_PARAMS, pkt2, 0, 100);
+        sendCommand(ESP_SPI_SET_PARAMS, pkt2, 0, SHORT_CMD_TIMEOUT);
     }
 
     /*
@@ -361,22 +368,16 @@ public class ESPLoader {
             }
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
             int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
-            CmdRet retVal;
+            CmdReply retVal;
             // not using the block timeout yet need to modify the senCommand to have a
             // proper timeout
             retVal = flash_defl_block(block, seq, block_timeout);
-            if (retVal.retCode == -1) {
-                System.out.println("Retry because Ret code:" + retVal.retCode);
-                System.out.println(printHex(retVal.retValue));
-                retVal = flash_defl_block(block, seq, block_timeout);
+            if (!retVal.isSuccess()) {
+                System.out.println("Retry because of timeout.");
+                flash_defl_block(block, seq, block_timeout);
             }
             seq += 1;
             position += FLASH_WRITE_SIZE;
-            //System.out.println("Ret code:" + retVal.retCode);
-            //System.out.println("Ret code:" + retVal.retValue.toString());
-            //if (debug) {
-            //    System.out.println(printHex(retVal.retValue));
-            //}
         }
         long t2 = System.currentTimeMillis();
         System.out.println("Took " + (t2 - t1) + "ms to write " + size + " bytes");
@@ -401,22 +402,16 @@ public class ESPLoader {
             }
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
             int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
-            CmdRet retVal;
+            CmdReply retVal;
             // not using the block timeout yet need to modify the senCommand to have a
             // proper timeout
             retVal = flash_block(block, seq, block_timeout);
-            if (retVal.retCode == -1) {
-                System.out.println("Retry because Ret code:" + retVal.retCode);
-                System.out.println(printHex(retVal.retValue));
-                retVal = flash_block(block, seq, block_timeout);
+            if (!retVal.isSuccess()) {
+                System.out.println("Retry because of timeout.");
+                flash_block(block, seq, block_timeout);
             }
             seq += 1;
             position += FLASH_WRITE_SIZE;
-            //System.out.println("Ret code:" + retVal.retCode);
-            //System.out.println("Ret code:" + retVal.retValue.toString());
-            //if (debug) {
-            //    System.out.println(printHex(retVal.retValue));
-            //}
         }
         long t2 = System.currentTimeMillis();
         System.out.println("Took " + (t2 - t1) + "ms to write " + size + " bytes");
@@ -432,7 +427,7 @@ public class ESPLoader {
         if (isStub) {
             // using a stub (will use it in the future)
             write_size = size;
-            timeout = 3000;
+            timeout = DEFAULT_TIMEOUT;
         } else {
             // no stub
             write_size = erase_blocks * FLASH_WRITE_SIZE;
@@ -446,7 +441,7 @@ public class ESPLoader {
         if (chip == ESP32S3 || chip == ESP32C2 || chip == ESP32C3 || chip == ESP32C6 || chip == ESP32S2 || chip == ESP32H2) {
             pkt = _appendArray(pkt, _int_to_bytearray(0));
         }
-        CmdRet res = sendCommand(ESP_FLASH_DEFL_BEGIN, pkt, 0, timeout);
+        sendCommand(ESP_FLASH_DEFL_BEGIN, pkt, 0, timeout);
         // end time
         long t2 = System.currentTimeMillis();
         if (size != 0 && !isStub) {
@@ -464,7 +459,7 @@ public class ESPLoader {
         if (isStub) {
             // using a stub (will use it in the future)
             write_size = size;
-            timeout = 3000;
+            timeout = DEFAULT_TIMEOUT;
         } else {
             // no stub
             write_size = erase_blocks * FLASH_WRITE_SIZE;
@@ -478,15 +473,13 @@ public class ESPLoader {
         if (chip == ESP32S3 || chip == ESP32C2 || chip == ESP32C3 || chip == ESP32C6 || chip == ESP32S2 || chip == ESP32H2) {
             pkt = _appendArray(pkt, _int_to_bytearray(0));
         }
-        CmdRet res = sendCommand(ESP_FLASH_BEGIN, pkt, 0, timeout);
-        // end time
+        sendCommand(ESP_FLASH_BEGIN, pkt, 0, timeout);
         long t2 = System.currentTimeMillis();
         if (size != 0 && !isStub) {
             System.out.println("Took " + ((t2 - t1) / 1000) + "." + ((t2 - t1) % 1000) + "s to erase flash block");
         }
         return num_blocks;
     }
-
 
     /*
      * Send a command to the chip to find out what type it is
@@ -573,30 +566,15 @@ public class ESPLoader {
         return chk;
     }
 
-    private int read_reg(int addr, int timeout) {
-        CmdRet val;
-        byte[] pkt = _int_to_bytearray(addr);
-        val = sendCommand(ESP_READ_REG, pkt, 0, timeout);
-        return val.retValue[0];
-    }
-
     private int readRegister(int reg) {
-        int retVal;
-        CmdRet ret;
-        byte[] packet = _int_to_bytearray(reg);
-        ret = sendCommand(ESP_READ_REG, packet, 0, 100);
-        byte[] subArray = new byte[4];
-        subArray[3] = ret.retValue[4];
-        subArray[2] = ret.retValue[5];
-        subArray[1] = ret.retValue[6];
-        subArray[0] = ret.retValue[7];
-        retVal = ((subArray[0] & 0xFF) << 24) | ((subArray[1] & 0xFF) << 16) | ((subArray[2] & 0xFF) << 8) | (subArray[3] & 0xFF);
-        return retVal;
+        CmdReply ret = sendCommand(ESP_READ_REG, _int_to_bytearray(reg), 0, SHORT_CMD_TIMEOUT);
+        byte[] reply = ret.getReply();
+        return ((reply[7] & 0xFF) << 24) | ((reply[6] & 0xFF) << 16) | ((reply[5] & 0xFF) << 8) | (reply[4] & 0xFF);
     }
 
     private int timeout_per_mb(int seconds_per_mb, int size_bytes) {
         int result = (int) (seconds_per_mb * ((double) size_bytes / (double) 1000000));
-        return Math.max(result, 3000);
+        return Math.max(result, DEFAULT_TIMEOUT);
     }
 
     private byte[] _int_to_bytearray(int i) {
@@ -640,11 +618,11 @@ public class ESPLoader {
         temp[0] = (byte) (0x3C);
         temp[1] = (byte) (0x49);
         byte[] pkt = _appendArray(temp, _int_to_bytearray(1));
-        sendCommand(ESP_FLASH_END, pkt, 0, 100);
+        sendCommand(ESP_FLASH_END, pkt, 0, SHORT_CMD_TIMEOUT);
     }
 
     public void changeBaudRate(int baudRate) {
         byte[] pkt = _appendArray(_int_to_bytearray(baudRate), _int_to_bytearray(0));
-        sendCommand(ESP_CHANGE_BAUDRATE, pkt, 0, 100);
+        sendCommand(ESP_CHANGE_BAUDRATE, pkt, 0, SHORT_CMD_TIMEOUT);
     }
 }

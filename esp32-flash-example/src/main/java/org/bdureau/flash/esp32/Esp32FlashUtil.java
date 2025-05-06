@@ -55,10 +55,7 @@ public class Esp32FlashUtil {
         boolean syncSuccess = false;
         // get the first port available, you might want to change that
         comPort = SerialPort.getCommPorts()[6];
-        String portName = comPort.getDescriptivePortName();
-        if (DEBUG) {
-            System.out.println("connected to: " + portName);
-        }
+        System.out.println("Connected to: \"" + comPort.getDescriptivePortName() + "\"");
         // initialize at 115200 bauds
         comPort.setBaudRate(ESP_ROM_BAUD);
         comPort.openPort();
@@ -79,8 +76,7 @@ public class Esp32FlashUtil {
             delayMs(100);
             comPort.flushIOBuffers();
             // let's detect the chip
-            // should work with an ESP32, ESP32S3, ESP32C3, ESP8266 because this is what the program
-            // is for
+            // should work with an ESP32, ESP32S3, ESP32C3, ESP8266 because this is what the program is for
             int chip = espLoader.detectChip();
             if (chip == ESP32) {
                 System.out.println("chip is ESP32");
