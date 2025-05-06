@@ -20,6 +20,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.zip.Deflater;
 
 import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
@@ -480,6 +481,42 @@ public class ESPLoader {
         }
         return num_blocks;
     }
+    public boolean loadStub(byte[] stubData, int loadAddr, int entryPoint) {
+        int numBlocks = (stubData.length + FLASH_WRITE_SIZE - 1) / FLASH_WRITE_SIZE;
+        // 1. Begin memory transfer
+        byte[] pkt = _appendArray(_int_to_bytearray(stubData.length), _int_to_bytearray(numBlocks));
+        pkt = _appendArray(pkt, _int_to_bytearray(FLASH_WRITE_SIZE));
+        pkt = _appendArray(pkt, _int_to_bytearray(loadAddr));
+        CmdReply beginReply = sendCommand(ESP_MEM_BEGIN, pkt, 0, DEFAULT_TIMEOUT);
+        if (!beginReply.isSuccess()) {
+            System.err.println("Failed to start memory transfer.");
+            return false;
+        }
+        // 2. Send each block
+        for (int seq = 0; seq < numBlocks; seq++) {
+            int offset = seq * FLASH_WRITE_SIZE;
+            int actualBlockSize = Math.min(FLASH_WRITE_SIZE, stubData.length - offset);
+            byte[] blockData = Arrays.copyOfRange(stubData, offset, offset + actualBlockSize);
+            byte[] dataPayload = _appendArray(_int_to_bytearray(actualBlockSize), _int_to_bytearray(seq));
+            dataPayload = _appendArray(dataPayload, _int_to_bytearray(0));
+            dataPayload = _appendArray(dataPayload, _int_to_bytearray(loadAddr + offset));
+            dataPayload = _appendArray(dataPayload, blockData);
+            CmdReply dataReply = sendCommand(ESP_MEM_DATA, dataPayload, 0, DEFAULT_TIMEOUT);
+            if (!dataReply.isSuccess()) {
+                System.err.printf("Failed to write memory block %d/%d%n", seq + 1, numBlocks);
+                return false;
+            }
+        }
+        // 3. End memory transfer
+        byte[] endPayload = _appendArray(_int_to_bytearray(entryPoint), _int_to_bytearray(1));
+        CmdReply endReply = sendCommand(ESP_MEM_END, endPayload, 0, DEFAULT_TIMEOUT);
+        if (!endReply.isSuccess()) {
+            System.err.println("Failed to complete memory transfer.");
+            return false;
+        }
+        return true;
+    }
+
 
     /*
      * Send a command to the chip to find out what type it is
