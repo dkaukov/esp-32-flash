@@ -172,7 +172,7 @@ public class ESPLoader {
         byte[] buf = slipEncode(data);
         comPort.write(buf, buf.length);
         if (debug) {
-            System.out.println(printHex(buffer));
+            System.out.println(">>>>:" + buf.length + ": " + printHex(buf));
         }
         return readSlipResponse(timeout);
     }
@@ -199,6 +199,9 @@ public class ESPLoader {
                     buffer.get(frame);
                     result.retValue = slipDecode(frame);
                     result.retCode = 1;
+                    if (debug) {
+                        System.out.println("<<<<:" + result.retValue.length + ": " + printHex(result.retValue));
+                    }
                     return result;
                 } else {
                     buffer.clear();
@@ -370,9 +373,9 @@ public class ESPLoader {
             position += FLASH_WRITE_SIZE;
             //System.out.println("Ret code:" + retVal.retCode);
             //System.out.println("Ret code:" + retVal.retValue.toString());
-            if (debug) {
-                System.out.println(printHex(retVal.retValue));
-            }
+            //if (debug) {
+            //    System.out.println(printHex(retVal.retValue));
+            //}
         }
         long t2 = System.currentTimeMillis();
         System.out.println("Took " + (t2 - t1) + "ms to write " + size + " bytes");
@@ -410,9 +413,9 @@ public class ESPLoader {
             position += FLASH_WRITE_SIZE;
             //System.out.println("Ret code:" + retVal.retCode);
             //System.out.println("Ret code:" + retVal.retValue.toString());
-            if (debug) {
-                System.out.println(printHex(retVal.retValue));
-            }
+            //if (debug) {
+            //    System.out.println(printHex(retVal.retValue));
+            //}
         }
         long t2 = System.currentTimeMillis();
         System.out.println("Took " + (t2 - t1) + "ms to write " + size + " bytes");
@@ -464,7 +467,7 @@ public class ESPLoader {
         } else {
             // no stub
             write_size = erase_blocks * FLASH_WRITE_SIZE;
-            timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size) * 10;
+            timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size);
         }
         //System.out.println("Compressed " + size + " bytes to " + compsize + "...");
         byte[] pkt = _appendArray(_int_to_bytearray(write_size), _int_to_bytearray(num_blocks));
@@ -489,35 +492,34 @@ public class ESPLoader {
      */
     public int detectChip() {
         int chipMagicValue = readRegister(CHIP_DETECT_MAGIC_REG_ADDR);
-        int ret = 0;
         if (chipMagicValue == 0xfff0c101) {
-            ret = ESP8266;
+            chip = ESP8266;
         }
         if (chipMagicValue == 0x00f01d83) {
-            ret = ESP32;
+            chip = ESP32;
         }
         if (chipMagicValue == 0x000007c6) {
-            ret = ESP32S2;
+            chip = ESP32S2;
         }
         if (chipMagicValue == 0x9) {
-            ret = ESP32S3;
+            chip = ESP32S3;
         }
         if ((chipMagicValue == 0x6f51306f) || chipMagicValue == 2084675695) {
-            ret = ESP32C2;
+            chip = ESP32C2;
         }
         if (chipMagicValue == 0x6921506f || chipMagicValue == 0x1b31506f) {
-            ret = ESP32C3;
+            chip = ESP32C3;
         }
         if (chipMagicValue == 0x0da1806f || chipMagicValue == 752910447) {
-            ret = ESP32C6;
+            chip = ESP32C6;
         }
         if (chipMagicValue == 0xca26cc22 || chipMagicValue == 0xd7b73e80/*-675856768*/) {
-            ret = ESP32H2;
+            chip = ESP32H2;
         }
         if (debug) {
             System.out.println("chipMagicValue" + chipMagicValue);
         }
-        return ret;
+        return chip;
     }
 
     ////////////////////////////////////////////////
@@ -529,9 +531,12 @@ public class ESPLoader {
      */
     private String printHex(byte[] bytes) {
         StringBuilder sb = new StringBuilder();
-        sb.append("[ ");
-        for (byte b : bytes) {
-            sb.append(String.format("0x%02X ", b));
+        sb.append("[");
+        for (int i = 0; i < bytes.length; i++) {
+            sb.append(String.format("0x%02X", bytes[i]));
+            if (i < bytes.length - 1) {
+                sb.append(",");
+            }
         }
         sb.append("]");
         return sb.toString();
