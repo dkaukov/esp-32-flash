@@ -78,7 +78,7 @@ public class Esp32FlashUtil {
                 espLoader.changeBaudRate(ESP_ROM_BAUD_HIGH);
                 comPort.setBaudRate(ESP_ROM_BAUD_HIGH);
             }
-            //espLoader.loadStub();
+            espLoader.loadStub();
             espLoader.init();
             // Those are the files you want to flush
             // I am providing tests with the blink program
