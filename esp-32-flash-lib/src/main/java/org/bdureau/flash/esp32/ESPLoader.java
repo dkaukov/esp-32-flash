@@ -20,13 +20,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.EnumSet;
+import java.util.Set;
 import java.util.zip.Deflater;
 
 import com.eclipsesource.json.Json;
@@ -37,24 +39,14 @@ import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 
 public class ESPLoader {
 
-    private final SerialPort comPort;
-
-    private static final int ESP_ROM_BAUD = 115200;
-    private static final int FLASH_WRITE_SIZE = 0x4000;
+    public static final int ESP_ROM_BAUD = 115200;
+    public static final int ESP_ROM_BAUD_HIGH = 460800;
+    private static final int FLASH_WRITE_SIZE = 0x400;
     public static final int MEM_WRITE_SIZE = 0x1800;
-    private static final int STUBLOADER_FLASH_WRITE_SIZE = 0x4000;
+    private static final int STUB_FLASH_WRITE_SIZE = 0x4000;
     private static final int FLASH_SECTOR_SIZE = 0x1000; // Flash sector size, minimum unit of erase.
-    private static final int PADDING_ALIGNMENT = 0x400;
 
     private static final int CHIP_DETECT_MAGIC_REG_ADDR = 0x40001000;
-    public static final int ESP8266 = 0x8266;
-    public static final int ESP32 = 0x32;
-    public static final int ESP32S2 = 0x3252;
-    public static final int ESP32S3 = 0x3253;
-    public static final int ESP32H2 = 0x3282;
-    public static final int ESP32C2 = 0x32C2;
-    public static final int ESP32C3 = 0x32C3;
-    public static final int ESP32C6 = 0x32C6;
 
     // Device-specific data register values
     private static final int ESP32_DATAREGVALUE     = 0x15122500;
@@ -120,9 +112,19 @@ public class ESPLoader {
     private static final int ERASE_REGION_TIMEOUT_PER_MB  = 30_000;   // Per MB region erase
     private static final int MD5_TIMEOUT_PER_MB           = 8000;     // Per MB MD5 computation
 
-    private int chip;
+    private static final Set<Esp32ChipId> CHIPS_REQUIRING_ADDITIONAL_FLASH_PARAM = EnumSet.of(
+        Esp32ChipId.ESP32S3,
+        Esp32ChipId.ESP32C2,
+        Esp32ChipId.ESP32C3,
+        Esp32ChipId.ESP32C6,
+        Esp32ChipId.ESP32S2,
+        Esp32ChipId.ESP32H2
+    );
+
+    private Esp32ChipId chip;
     private boolean isStub = false;
     private boolean debug = true;
+    private final SerialPort comPort;
 
     @SuppressFBWarnings("EI_EXPOSE_REP2")
     public ESPLoader(SerialPort comPort) {
@@ -132,7 +134,7 @@ public class ESPLoader {
     private static class CmdReply {
         private final boolean success;
         private final  byte[] reply;
-        public CmdReply(boolean success, byte[] reply) {
+        CmdReply(boolean success, byte[] reply) {
             this.success = success;
             this.reply = reply;
         }
@@ -377,23 +379,36 @@ public class ESPLoader {
         }
     }
 
+    public void writeFlash(String name, byte[] binaryData, int offset) {
+        writeFlash(name, binaryData, offset, false);
+    }
+
+    public void writeFlash(String name, byte[] binaryData, int offset, boolean compress) {
+        int blockSize = isStub() ? STUB_FLASH_WRITE_SIZE : FLASH_WRITE_SIZE;
+        if (compress) {
+            compressAndFlash(name, binaryData, offset, blockSize);
+        } else {
+            flash(name, binaryData, offset, blockSize);
+        }
+    }
+
     /*
      * @name flashData Program a full, uncompressed binary file into SPI Flash at a
      * given offset. If an ESP32 and md5 string is passed in, will also verify
      * memory. ESP8266 does not have checksum memory verification in ROM
      */
-    public void flashCompressedData(byte[] binaryData, int offset, int part) {
-        System.out.println("\nWriting data with fileSize: " + binaryData.length);
-        int size = binaryData.length;
-        byte[] image = compressBytes(binaryData);
-        int blocks = flash_defl_begin(size, image.length, offset);
+    private void compressAndFlash(String name, byte[] src, int offset, int blockSize) {
+        System.out.printf("Writing %s with fileSize: %s%n", name, src.length);
+        int size = src.length;
+        byte[] image = compressBytes(src);
+        int blocks = flash_defl_begin(size, image.length, offset, blockSize);
         int seq = 0;
         int position = 0;
         long t1 = System.currentTimeMillis();
         while (position < image.length) {
             double percentage = Math.floor((double) (100 * (seq + 1)) / blocks);
             System.out.println("percentage: " + percentage);
-            int chunkSize = Math.min(FLASH_WRITE_SIZE, image.length - position);
+            int chunkSize = Math.min(blockSize, image.length - position);
             byte[] block = _subArray(image, position, chunkSize);
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
             int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, chunkSize);
@@ -405,7 +420,7 @@ public class ESPLoader {
             seq++;
             position += chunkSize;
         }
-        checkMd5(binaryData, offset);
+        checkMd5(src, offset);
         long t2 = System.currentTimeMillis();
         System.out.printf("Wrote %d bytes (%d compressed) at 0x%08X in %.2f seconds (effective %.2f kbit/s)...%n", size, image.length, offset, (t2 - t1) / 1000.0, (size / 1024 * 8) / ((t2 - t1) / 1000.0));
     }
@@ -425,28 +440,27 @@ public class ESPLoader {
         }
     }
 
-
-    public void flashData(byte[] binaryData, int offset, int part) {
-        int size = binaryData.length;
-        System.out.println("\nWriting data with filesize: " + size);
-        int blocks = flash_begin(size, offset);
+    private void flash(String name, byte[] src, int offset, int blockSize) {
+        int size = src.length;
+        System.out.printf("Writing %s with fileSize: %s%n", name, size);
+        int blocks = flash_begin(size, offset, blockSize);
         int seq = 0;
         int position = 0;
         long t1 = System.currentTimeMillis();
-        while (binaryData.length - position > 0) {
+        while (src.length - position > 0) {
             double percentage = Math.floor((double) (100 * (seq + 1)) / blocks);
             System.out.println("percentage: " + percentage);
             byte[] block;
-            if (binaryData.length - position >= FLASH_WRITE_SIZE) {
-                block = _subArray(binaryData, position, FLASH_WRITE_SIZE);
+            if (src.length - position >= blockSize) {
+                block = _subArray(src, position, blockSize);
             } else {
                 // Pad the last block to FLASH_WRITE_SIZE with 0xFF
-                int remaining = binaryData.length - position;
-                block = new byte[FLASH_WRITE_SIZE];
-                System.arraycopy(binaryData, position, block, 0, remaining);
+                int remaining = src.length - position;
+                block = new byte[blockSize];
+                System.arraycopy(src, position, block, 0, remaining);
             }
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
-            int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
+            int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, blockSize);
             CmdReply retVal;
             // not using the block timeout yet need to modify the senCommand to have a
             // proper timeout
@@ -456,16 +470,16 @@ public class ESPLoader {
                 flash_block(block, seq, block_timeout);
             }
             seq += 1;
-            position += FLASH_WRITE_SIZE;
+            position += blockSize;
         }
-        checkMd5(binaryData, offset);
+        checkMd5(src, offset);
         long t2 = System.currentTimeMillis();
         System.out.printf("Wrote %d bytes at 0x%08X in %.2f seconds (effective %.2f kbit/s)...%n", size, offset, (t2 - t1) / 1000.0, (size / 1024 * 8) / ((t2 - t1) / 1000.0));
     }
 
-    private int flash_defl_begin(int size, int compressedSize, int offset) {
-        int num_blocks = (int) Math.floor((double) (compressedSize + FLASH_WRITE_SIZE - 1) / (double) FLASH_WRITE_SIZE);
-        int erase_blocks = (int) Math.floor((double) (size + FLASH_WRITE_SIZE - 1) / (double) FLASH_WRITE_SIZE);
+    private int flash_defl_begin(int size, int compressedSize, int offset, int blockSize) {
+        int num_blocks = (int) Math.floor((double) (compressedSize + blockSize - 1) / (double) blockSize);
+        int erase_blocks = (int) Math.floor((double) (size + blockSize - 1) / (double) blockSize);
         // Start time
         long t1 = System.currentTimeMillis();
         int write_size, timeout;
@@ -475,15 +489,15 @@ public class ESPLoader {
             timeout = DEFAULT_TIMEOUT;
         } else {
             // no stub
-            write_size = erase_blocks * FLASH_WRITE_SIZE;
+            write_size = erase_blocks * blockSize;
             timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size);
         }
         System.out.println("Compressed " + size + " bytes to " + compressedSize + "...");
         byte[] pkt = _appendArray(_int_to_bytearray(write_size), _int_to_bytearray(num_blocks));
-        pkt = _appendArray(pkt, _int_to_bytearray(FLASH_WRITE_SIZE));
+        pkt = _appendArray(pkt, _int_to_bytearray(blockSize));
         pkt = _appendArray(pkt, _int_to_bytearray(offset));
         // ESP32S3, ESP32C3, ESP32S2, ESP32C6,ESP32H2
-        if (chip == ESP32S3 || chip == ESP32C2 || chip == ESP32C3 || chip == ESP32C6 || chip == ESP32S2 || chip == ESP32H2) {
+        if (CHIPS_REQUIRING_ADDITIONAL_FLASH_PARAM.contains(chip)) {
             pkt = _appendArray(pkt, _int_to_bytearray(0));
         }
         sendCommand(ESP_FLASH_DEFL_BEGIN, pkt, 0, timeout);
@@ -495,9 +509,9 @@ public class ESPLoader {
         return num_blocks;
     }
 
-    private int flash_begin(int size, int offset) {
-        int num_blocks = (int) Math.floor((double) (size + FLASH_WRITE_SIZE - 1) / (double) FLASH_WRITE_SIZE);
-        int erase_blocks = (int) Math.floor((double) (size + FLASH_WRITE_SIZE - 1) / (double) FLASH_WRITE_SIZE);
+    private int flash_begin(int size, int offset, int blockSize) {
+        int num_blocks = (int) Math.floor((double) (size + blockSize - 1) / (double) blockSize);
+        int erase_blocks = (int) Math.floor((double) (size + blockSize - 1) / (double) blockSize);
         // Start time
         long t1 = System.currentTimeMillis();
         int write_size, timeout;
@@ -507,15 +521,15 @@ public class ESPLoader {
             timeout = DEFAULT_TIMEOUT;
         } else {
             // no stub
-            write_size = erase_blocks * FLASH_WRITE_SIZE;
+            write_size = erase_blocks * blockSize;
             timeout = timeout_per_mb(ERASE_REGION_TIMEOUT_PER_MB, write_size);
         }
         //System.out.println("Compressed " + size + " bytes to " + compsize + "...");
         byte[] pkt = _appendArray(_int_to_bytearray(write_size), _int_to_bytearray(num_blocks));
-        pkt = _appendArray(pkt, _int_to_bytearray(FLASH_WRITE_SIZE));
+        pkt = _appendArray(pkt, _int_to_bytearray(blockSize));
         pkt = _appendArray(pkt, _int_to_bytearray(offset));
         // ESP32S3, ESP32C3, ESP32S2, ESP32C6,ESP32H2
-        if (chip == ESP32S3 || chip == ESP32C2 || chip == ESP32C3 || chip == ESP32C6 || chip == ESP32S2 || chip == ESP32H2) {
+        if (CHIPS_REQUIRING_ADDITIONAL_FLASH_PARAM.contains(chip)) {
             pkt = _appendArray(pkt, _int_to_bytearray(0));
         }
         sendCommand(ESP_FLASH_BEGIN, pkt, 0, timeout);
@@ -591,49 +605,45 @@ public class ESPLoader {
         }
     }
 
-    public boolean loadStub() {
-        JsonObject json = Json.parse(new String(readResource("stubs/1/esp32.json"))).asObject();
+    public void loadStub() {
+        byte[] stub;
+        switch (chip) {
+            case ESP32:
+                stub = readResource("stubs/1/esp32.json");
+                break;
+            case ESP32S2:
+                stub = readResource("stubs/1/esp32s2.json");
+                break;
+            case ESP32S3:
+                stub = readResource("stubs/1/esp32s3.json");
+                break;
+            case ESP32C3:
+                stub = readResource("stubs/1/esp32c3.json");
+                break;
+            case ESP32C6:
+                stub = readResource("stubs/1/esp32c6.json");
+                break;
+            case ESP32H2:
+                stub = readResource("stubs/1/esp32h2.json");
+                break;
+            default:
+                System.err.println("Unsupported chip type: " + chip);
+                return;
+        }
+        JsonObject json = Json.parse(new String(stub, StandardCharsets.UTF_8)).asObject();
         int entry = json.getInt("entry", 0);
         int text_start = json.getInt("text_start", 0);
         int data_start = json.getInt("data_start", 0);
         byte[] text = Base64.getDecoder().decode(json.getString("text", ""));
         byte[] data = Base64.getDecoder().decode(json.getString("data", ""));
         isStub = loadStub(text, text_start, data, data_start, entry);
-        return isStub;
     }
 
     /*
      * Send a command to the chip to find out what type it is
      */
-    public int detectChip() {
-        int chipMagicValue = readRegister(CHIP_DETECT_MAGIC_REG_ADDR);
-        if (chipMagicValue == 0xfff0c101) {
-            chip = ESP8266;
-        }
-        if (chipMagicValue == 0x00f01d83) {
-            chip = ESP32;
-        }
-        if (chipMagicValue == 0x000007c6) {
-            chip = ESP32S2;
-        }
-        if (chipMagicValue == 0x9) {
-            chip = ESP32S3;
-        }
-        if ((chipMagicValue == 0x6f51306f) || chipMagicValue == 2084675695) {
-            chip = ESP32C2;
-        }
-        if (chipMagicValue == 0x6921506f || chipMagicValue == 0x1b31506f) {
-            chip = ESP32C3;
-        }
-        if (chipMagicValue == 0x0da1806f || chipMagicValue == 752910447) {
-            chip = ESP32C6;
-        }
-        if (chipMagicValue == 0xca26cc22 || chipMagicValue == 0xd7b73e80/*-675856768*/) {
-            chip = ESP32H2;
-        }
-        if (debug) {
-            System.out.println("chipMagicValue" + chipMagicValue);
-        }
+    public Esp32ChipId detectChip() {
+        chip = Esp32ChipId.fromMagicValue(readRegister(CHIP_DETECT_MAGIC_REG_ADDR));
         return chip;
     }
 

@@ -1,14 +1,7 @@
 package org.bdureau.flash.esp32;
 
-
-import static org.bdureau.flash.esp32.ESPLoader.ESP32;
-import static org.bdureau.flash.esp32.ESPLoader.ESP32C2;
-import static org.bdureau.flash.esp32.ESPLoader.ESP32C3;
-import static org.bdureau.flash.esp32.ESPLoader.ESP32C6;
-import static org.bdureau.flash.esp32.ESPLoader.ESP32H2;
-import static org.bdureau.flash.esp32.ESPLoader.ESP32S2;
-import static org.bdureau.flash.esp32.ESPLoader.ESP32S3;
-import static org.bdureau.flash.esp32.ESPLoader.ESP8266;
+import static org.bdureau.flash.esp32.ESPLoader.ESP_ROM_BAUD;
+import static org.bdureau.flash.esp32.ESPLoader.ESP_ROM_BAUD_HIGH;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -22,7 +15,6 @@ public class Esp32FlashUtil {
 
     static SerialPort comPort;
     private static final boolean DEBUG = false;
-    private static final int ESP_ROM_BAUD = 115200;
 
     public static byte[] readResource(String resourcePath) {
         try (InputStream inputStream = Thread.currentThread().getContextClassLoader().getResourceAsStream(resourcePath)) {
@@ -68,136 +60,105 @@ public class Esp32FlashUtil {
         }
         comPort.flushIOBuffers();
         delayMs(50);
-
         syncSuccess = espLoader.sync();
-
         if (syncSuccess) {
             System.out.println("Sync Success!!!");
             delayMs(100);
             comPort.flushIOBuffers();
             // let's detect the chip
             // should work with an ESP32, ESP32S3, ESP32C3, ESP8266 because this is what the program is for
-            int chip = espLoader.detectChip();
-            if (chip == ESP32) {
-                System.out.println("chip is ESP32");
-            }
-            if (chip == ESP32S2) {
-                System.out.println("chip is ESP32S2");
-            }
-            if (chip == ESP32S3) {
-                System.out.println("chip is ESP32S3");
-            }
-            if (chip == ESP32C3) {
-                System.out.println("chip is ESP32C3");
-            }
-            if (chip == ESP8266) {
-                System.out.println("chip is ESP8266");
-            }
-            if (chip == ESP32C6) {
-                System.out.println("chip is ESP32C6");
-            }
-            if (chip == ESP32H2) {
-                System.out.println("chip is ESP32H2");
-            }
-            System.out.println(chip);
+            Esp32ChipId chip = espLoader.detectChip();
+            System.out.println("Chip is " + chip.getReadableName());
 
             // now that we have initialised the chip we can change the baud rate to 460800
             // first we tell the chip the new baud rate
             // not that we do not do it for ESP8266
-            if (chip != ESP8266) {
-                System.out.println("Changing baudrate to 460800");
-                espLoader.changeBaudRate(460800);
-                // second we change the com port baud rate
-                comPort.setBaudRate(460800);
-                // let's wait
-                //delayMs(50);
+            if (chip != Esp32ChipId.ESP8266) {
+                System.out.println("Changing baud-rate to " + ESP_ROM_BAUD_HIGH);
+                espLoader.changeBaudRate(ESP_ROM_BAUD_HIGH);
+                comPort.setBaudRate(ESP_ROM_BAUD_HIGH);
             }
-            espLoader.loadStub();
+            //espLoader.loadStub();
             espLoader.init();
             // Those are the files you want to flush
             // I am providing tests with the blink program
             // They might not work for you depending of your LED wiring
             // you will need to change the test firmware file path
             // the test firmwares are in the resources directories
-            if (chip == ESP32) {
+            if (chip == Esp32ChipId.ESP32) {
                 byte[] file2 = readResource("ESP32/ESP32Blink.ino.bootloader.bin");
-                espLoader.flashData(file2, 0x1000, 0);
-
+                espLoader.writeFlash("boot", file2, 0x1000);
                 byte[] file4 = readResource("ESP32/ESP32Blink.ino.partitions.bin");
-                espLoader.flashData(file4, 0x8000, 0);
-
+                espLoader.writeFlash("ptable", file4, 0x8000);
                 byte[] file1 = readResource("ESP32/boot_app0.bin");
-                espLoader.flashData(file1, 0xe000, 0);
-
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file3 = readResource("ESP32/ESP32Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
             }
-            if (chip == ESP32C2) {
-                // waiting for the Arduino core to be ready to test it
+            if (chip == Esp32ChipId.ESP32C2) {
                 byte[] file1 = readResource("ESP32C2/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file2 = readResource("ESP32C2/ESP32C2Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x0000, 0);
+                espLoader.writeFlash("boot", file2, 0x0000);
                 byte[] file3 = readResource("ESP32C2/ESP32C2Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
                 byte[] file4 = readResource("ESP32C2/ESP32C2Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.writeFlash("ptable", file4, 0x8000);
             }
-
-            if (chip == ESP32C3) {
+            if (chip == Esp32ChipId.ESP32C3) {
                 byte[] file1 = readResource("ESP32C3/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file2 = readResource("ESP32C3/ESP32C3Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x0000, 0);
+                espLoader.writeFlash("boot", file2, 0x0000);
                 byte[] file3 = readResource("ESP32C3/ESP32C3Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
                 byte[] file4 = readResource("ESP32C3/ESP32C3Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.writeFlash("ptable", file4, 0x8000);
             }
-            if (chip == ESP32C6) {
+            if (chip == Esp32ChipId.ESP32C6) {
                 byte[] file1 = readResource("ESP32C6/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file2 = readResource("ESP32C6/ESP32C6Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x0000, 0);
+                espLoader.writeFlash("boot", file2, 0x0000);
                 byte[] file3 = readResource("ESP32C6/ESP32C6Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
                 byte[] file4 = readResource("ESP32C6/ESP32C6Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.writeFlash("ptable", file4, 0x8000);
             }
-            if (chip == ESP32S2) {
+            if (chip == Esp32ChipId.ESP32S2) {
                 byte[] file1 = readResource("ESP32S2/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file2 = readResource("ESP32S2/ESP32S2Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x1000, 0);
+                espLoader.writeFlash("boot", file2, 0x1000);
                 byte[] file3 = readResource("ESP32S2/ESP32S2Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
                 byte[] file4 = readResource("ESP32S2/ESP32S2Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.writeFlash("ptable", file4, 0x8000);
             }
-            if (chip == ESP32S3) {
+            if (chip == Esp32ChipId.ESP32S3) {
                 byte[] file1 = readResource("ESP32S3/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file2 = readResource("ESP32S3/ESP32S3Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x0000, 0);
+                espLoader.writeFlash("boot", file2, 0x0000);
                 byte[] file3 = readResource("ESP32S3/ESP32S3Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
                 byte[] file4 = readResource("ESP32S3/ESP32S3Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.writeFlash("ptable", file4, 0x8000);
             }
-            if (chip == ESP8266) {
+            if (chip == Esp32ChipId.ESP8266) {
                 //Flash uncompress file
                 byte[] file1 = readResource("ESP8266/ESP8266Blink.ino.bin");
-                espLoader.flashData(file1, 0x0000, 0);
+                espLoader.writeFlash("fw", file1, 0x0000, true);
             }
-            if (chip == ESP32H2) {
+            if (chip == Esp32ChipId.ESP32H2) {
                 byte[] file1 = readResource("ESP32H2/boot_app0.bin");
-                espLoader.flashCompressedData(file1, 0xe000, 0);
+                espLoader.writeFlash("bootApp", file1, 0xe000);
                 byte[] file2 = readResource("ESP32H2/ESP32H2Blink.ino.bootloader.bin");
-                espLoader.flashCompressedData(file2, 0x0000, 0);
+                espLoader.writeFlash("boot", file2, 0x0000);
                 byte[] file3 = readResource("ESP32H2/ESP32H2Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+                espLoader.writeFlash("fw", file3, 0x10000, true);
                 byte[] file4 = readResource("ESP32H2/ESP32H2Blink.ino.partitions.bin");
-                espLoader.flashCompressedData(file4, 0x8000, 0);
+                espLoader.writeFlash("ptable", file4, 0x8000);
             }
             espLoader.flash_finish(); // not sure it is usefull
             // we have finish flashing lets reset the board so that the program can start
