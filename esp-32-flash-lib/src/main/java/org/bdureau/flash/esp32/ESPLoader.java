@@ -18,11 +18,13 @@ package org.bdureau.flash.esp32;
 
 import java.io.ByteArrayOutputStream;
 import java.io.FileNotFoundException;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.zip.Deflater;
@@ -38,9 +40,11 @@ public class ESPLoader {
     private final SerialPort comPort;
 
     private static final int ESP_ROM_BAUD = 115200;
-    private static final int FLASH_WRITE_SIZE = 0x400;
+    private static final int FLASH_WRITE_SIZE = 0x4000;
+    public static final int MEM_WRITE_SIZE = 0x1800;
     private static final int STUBLOADER_FLASH_WRITE_SIZE = 0x4000;
     private static final int FLASH_SECTOR_SIZE = 0x1000; // Flash sector size, minimum unit of erase.
+    private static final int PADDING_ALIGNMENT = 0x400;
 
     private static final int CHIP_DETECT_MAGIC_REG_ADDR = 0x40001000;
     public static final int ESP8266 = 0x8266;
@@ -95,14 +99,14 @@ public class ESPLoader {
     private static final byte ROM_INVALID_RECV_MSG   = (byte) 0x05;
 
     // Checksum initial state
-    private static final byte ESP_CHECKSUM_MAGIC     = (byte) 0xEF;
+    private static final int ESP_CHECKSUM_MAGIC     = 0xEF;
 
     // Misc hardware addresses
     private static final int UART_DATE_REG_ADDR = 0x60000078;
 
     // RAM block sizes
     private static final int USB_RAM_BLOCK = 0x0800;
-    private static final int ESP_RAM_BLOCK = 0x1800;
+    private static final int ESP_RAM_BLOCK = MEM_WRITE_SIZE;
 
     // Timeouts (in milliseconds)
     private static final int DEFAULT_TIMEOUT              = 3000;
@@ -333,6 +337,21 @@ public class ESPLoader {
         return retVal;
     }
 
+    private CmdReply esp_spi_flash_md5(int offset, int size, int timeout) {
+        // Prepare payload: offset (4 bytes LE), size (4 bytes LE)
+        byte[] pkt = _appendArray(_int_to_bytearray(offset), _int_to_bytearray(size));
+        pkt = _appendArray(pkt, _int_to_bytearray(0));
+        pkt = _appendArray(pkt, _int_to_bytearray(0));
+        // No checksum needed for MD5 — just send the command with payload
+        CmdReply retVal = sendCommand(ESP_SPI_FLASH_MD5, pkt, 0, timeout);
+        // Expect retVal.data to contain 16-byte MD5 digest if successful
+        if (!retVal.isSuccess()) {
+            System.err.println("Invalid or missing MD5 response.");
+            return null;
+        }
+        return retVal;
+    }
+
     public void init() {
         int flashSize = 4 * 1024 * 1024;
         if (!isStub) {
@@ -340,7 +359,10 @@ public class ESPLoader {
             // byte pkt[] = _int_to_bytearray(0); // 4 or 8 zero's? not sure
             byte[] pkt = _appendArray(_int_to_bytearray(0), _int_to_bytearray(0));
             System.out.println("Enabling default SPI flash mode...");
-            sendCommand(ESP_SPI_ATTACH, pkt, 0, SHORT_CMD_TIMEOUT);
+            CmdReply res = sendCommand(ESP_SPI_ATTACH, pkt, 0, SHORT_CMD_TIMEOUT);
+            if (!res.isSuccess()) {
+                System.err.println("Failed to execute ESP_SPI_ATTACH");
+            }
         }
         // We are hardcoding 4MB flash for an ESP32
         System.out.println("Configuring flash size...");
@@ -349,7 +371,10 @@ public class ESPLoader {
         pkt2 = _appendArray(pkt2, _int_to_bytearray(/* 4096 */ 4 * 1024));
         pkt2 = _appendArray(pkt2, _int_to_bytearray(256));
         pkt2 = _appendArray(pkt2, _int_to_bytearray(0xFFFF));
-        sendCommand(ESP_SPI_SET_PARAMS, pkt2, 0, SHORT_CMD_TIMEOUT);
+        CmdReply res = sendCommand(ESP_SPI_SET_PARAMS, pkt2, 0, SHORT_CMD_TIMEOUT);
+        if (!res.isSuccess()) {
+            System.err.println("Failed to execute ESP_SPI_SET_PARAMS");
+        }
     }
 
     /*
@@ -358,39 +383,48 @@ public class ESPLoader {
      * memory. ESP8266 does not have checksum memory verification in ROM
      */
     public void flashCompressedData(byte[] binaryData, int offset, int part) {
+        System.out.println("\nWriting data with fileSize: " + binaryData.length);
         int size = binaryData.length;
-        System.out.println("\nWriting data with fileSize: " + size);
         byte[] image = compressBytes(binaryData);
         int blocks = flash_defl_begin(size, image.length, offset);
         int seq = 0;
         int position = 0;
         long t1 = System.currentTimeMillis();
-        while (image.length - position > 0) {
+        while (position < image.length) {
             double percentage = Math.floor((double) (100 * (seq + 1)) / blocks);
             System.out.println("percentage: " + percentage);
-            byte[] block;
-            if (image.length - position >= FLASH_WRITE_SIZE) {
-                block = _subArray(image, position, FLASH_WRITE_SIZE);
-            } else {
-                // Pad the last block
-                block = _subArray(image, position, image.length - position);
-            }
+            int chunkSize = Math.min(FLASH_WRITE_SIZE, image.length - position);
+            byte[] block = _subArray(image, position, chunkSize);
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
-            int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
-            CmdReply retVal;
-            // not using the block timeout yet need to modify the senCommand to have a
-            // proper timeout
-            retVal = flash_defl_block(block, seq, block_timeout);
+            int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, chunkSize);
+            CmdReply retVal = flash_defl_block(block, seq, block_timeout);
             if (!retVal.isSuccess()) {
                 System.out.println("Retry because of timeout.");
                 flash_defl_block(block, seq, block_timeout);
             }
-            seq += 1;
-            position += FLASH_WRITE_SIZE;
+            seq++;
+            position += chunkSize;
         }
+        checkMd5(binaryData, offset);
         long t2 = System.currentTimeMillis();
-        System.out.println("Took " + (t2 - t1) + "ms to write " + size + " bytes");
+        System.out.printf("Wrote %d bytes (%d compressed) at 0x%08X in %.2f seconds (effective %.2f kbit/s)...%n", size, image.length, offset, (t2 - t1) / 1000.0, (size / 1024 * 8) / ((t2 - t1) / 1000.0));
     }
+
+    private void checkMd5(byte[] data, int offset) {
+        // Check MD5 checksum
+        CmdReply res = esp_spi_flash_md5(offset, data.length, DEFAULT_TIMEOUT);
+        if (res == null || !res.isSuccess() || res.getReply().length < 16) {
+            //System.err.println("MD5 checksum failed.");
+            return;
+        }
+        // Compare with expected MD5 checksum
+        if (!Arrays.equals(_subArray(res.getReply(), 8, 16), md5(data))) {
+            System.err.println("MD5 checksum mismatch.");
+        } else {
+            System.out.println("Hash of data verified.");
+        }
+    }
+
 
     public void flashData(byte[] binaryData, int offset, int part) {
         int size = binaryData.length;
@@ -406,8 +440,10 @@ public class ESPLoader {
             if (binaryData.length - position >= FLASH_WRITE_SIZE) {
                 block = _subArray(binaryData, position, FLASH_WRITE_SIZE);
             } else {
-                // Pad the last block
-                block = _subArray(binaryData, position, binaryData.length - position);
+                // Pad the last block to FLASH_WRITE_SIZE with 0xFF
+                int remaining = binaryData.length - position;
+                block = new byte[FLASH_WRITE_SIZE];
+                System.arraycopy(binaryData, position, block, 0, remaining);
             }
             int ERASE_WRITE_TIMEOUT_PER_MB = 40;
             int block_timeout = timeout_per_mb(ERASE_WRITE_TIMEOUT_PER_MB, FLASH_WRITE_SIZE);
@@ -422,10 +458,10 @@ public class ESPLoader {
             seq += 1;
             position += FLASH_WRITE_SIZE;
         }
+        checkMd5(binaryData, offset);
         long t2 = System.currentTimeMillis();
-        System.out.println("Took " + (t2 - t1) + "ms to write " + size + " bytes");
+        System.out.printf("Wrote %d bytes at 0x%08X in %.2f seconds (effective %.2f kbit/s)...%n", size, offset, (t2 - t1) / 1000.0, (size / 1024 * 8) / ((t2 - t1) / 1000.0));
     }
-
 
     private int flash_defl_begin(int size, int compressedSize, int offset) {
         int num_blocks = (int) Math.floor((double) (compressedSize + FLASH_WRITE_SIZE - 1) / (double) FLASH_WRITE_SIZE);
@@ -493,13 +529,13 @@ public class ESPLoader {
     public boolean loadStub(byte[] text, int textAdr, byte[] data, int dataAdr, int entryPoint) {
         // 1. Load .TEXT
         System.out.println("Loading .text");
-        if (!loadToRam(text, textAdr, 0x1800)) {
+        if (!loadToRam(text, textAdr, MEM_WRITE_SIZE)) {
             System.err.println("Failed to load TEXT.");
             return false;
         }
         // 1. Load .DATA
         System.out.println("Loading .data");
-        if (!loadToRam(data, dataAdr, 0x1800)) {
+        if (!loadToRam(data, dataAdr, MEM_WRITE_SIZE)) {
             System.err.println("Failed to load DATA.");
             return false;
         }
@@ -612,7 +648,7 @@ public class ESPLoader {
         StringBuilder sb = new StringBuilder();
         sb.append("[");
         for (int i = 0; i < bytes.length; i++) {
-            sb.append(String.format("0x%02X", bytes[i]));
+            sb.append(String.format("0x%02x", bytes[i]));
             if (i < bytes.length - 1) {
                 sb.append(",");
             }
@@ -625,7 +661,7 @@ public class ESPLoader {
         StringBuilder sb = new StringBuilder();
         sb.append("[");
         for (byte aByte : bytes) {
-            sb.append(String.format("%02X", aByte));
+            sb.append(String.format("%02x", aByte));
         }
         sb.append("]");
         return sb.toString();
@@ -655,8 +691,8 @@ public class ESPLoader {
      */
     private int _checksum(byte[] data) {
         int chk = ESP_CHECKSUM_MAGIC;
-        for (byte datum : data) {
-            chk ^= datum;
+        for (byte b : data) {
+            chk ^= (b & 0xFF);
         }
         return chk;
     }
@@ -714,10 +750,20 @@ public class ESPLoader {
         temp[1] = (byte) (0x49);
         byte[] pkt = _appendArray(temp, _int_to_bytearray(1));
         sendCommand(ESP_FLASH_END, pkt, 0, SHORT_CMD_TIMEOUT);
+        delayMS(200);
     }
 
     public void changeBaudRate(int baudRate) {
         byte[] pkt = _appendArray(_int_to_bytearray(baudRate), _int_to_bytearray(0));
         sendCommand(ESP_CHANGE_BAUDRATE, pkt, 0, SHORT_CMD_TIMEOUT);
+    }
+
+    public byte[] md5(byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            return md.digest(data);
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("MD5 algorithm not available", e);
+        }
     }
 }

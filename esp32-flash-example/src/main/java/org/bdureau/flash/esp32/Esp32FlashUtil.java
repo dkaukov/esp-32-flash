@@ -120,14 +120,17 @@ public class Esp32FlashUtil {
             // you will need to change the test firmware file path
             // the test firmwares are in the resources directories
             if (chip == ESP32) {
-                byte[] file1 = readResource("ESP32/boot_app0.bin");
-                espLoader.flashData(file1, 0xe000, 0);
                 byte[] file2 = readResource("ESP32/ESP32Blink.ino.bootloader.bin");
                 espLoader.flashData(file2, 0x1000, 0);
-                byte[] file3 = readResource("ESP32/ESP32Blink.ino.bin");
-                espLoader.flashCompressedData(file3, 0x10000, 0);
+
                 byte[] file4 = readResource("ESP32/ESP32Blink.ino.partitions.bin");
                 espLoader.flashData(file4, 0x8000, 0);
+
+                byte[] file1 = readResource("ESP32/boot_app0.bin");
+                espLoader.flashData(file1, 0xe000, 0);
+
+                byte[] file3 = readResource("ESP32/ESP32Blink.ino.bin");
+                espLoader.flashCompressedData(file3, 0x10000, 0);
             }
             if (chip == ESP32C2) {
                 // waiting for the Arduino core to be ready to test it
